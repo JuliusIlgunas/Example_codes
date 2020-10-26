@@ -1,0 +1,204 @@
+---
+title: "Twitter"
+output: html_document
+---
+
+```{r warning=FALSE, message=FALSE}
+library(twitteR)
+library(ROAuth)
+library(NLP)
+library(Rcpp)
+library(tm)
+library(SnowballC)
+library(fpc)
+library(RColorBrewer)
+library(wordcloud)
+library(ggplot2)
+```
+
+```{r warning=FALSE, message=FALSE}
+options(httr_oauth_cache=T)
+consumer_key <- "LYGz8qrteXOi9v0xQrjrLFxjI"
+consumer_secret <- "ZJ3uBe6bgGbCyzGbIGtXS4r2a5Nqw8TyHzuQcNx2KXZ2V6cJAI"
+access_token <- "1070669578261463040-mno7Y7jOZvZ7IdKmFTiFbqQpzWGcwn"
+access_token_secret <- "zcNau2nOhbEfP39axlqfRvEEkK1SspSwdJUsMFZEKexwL"
+
+setup_twitter_oauth(consumer_key, consumer_secret, access_token,
+                    access_token_secret)
+
+
+
+tweetsE <- userTimeline("NASA", n = 1000)
+(length(tweetsE))
+
+
+#Encoding(tweetsE) <- "UTF-8"
+```
+
+```{r warning=FALSE, message=FALSE}
+for (i in 1:5) {
+  cat(paste("[[", i, "]] ", sep=""))
+  writeLines(strwrap(tweetsE[[i]]$getText(), width=73))
+}  
+```
+
+```{r warning=FALSE, message=FALSE}
+#Transforming text
+
+myCorpus <- twListToDF(tweetsE)
+#dim(df)
+
+write.csv(myCorpus, file = "tweetsE2.csv", row.names = FALSE)
+
+myCorpus <- Corpus(VectorSource(myCorpus$text))
+#inspect(myCorpus[25:35])
+#myCorpus <- tweetsE
+
+for (i in 1:5) {
+  cat(paste("[[", i, "]] ", sep=""))
+  writeLines(strwrap(myCorpus[[i]], width=73))
+}  
+```
+
+```{r warning=FALSE, message=FALSE}
+#Text cleaning
+
+removeURL <- function(x) gsub("http[^[:space:]]*", "", x)
+removeat <- function(x) gsub("@[^[:space:]]*", "", x)
+myCorpus <- tm_map(myCorpus, content_transformer(removeURL))
+myCorpus <- tm_map(myCorpus, content_transformer(removeat))
+myCorpus <- tm_map(myCorpus, content_transformer(tolower))
+myCorpus <- tm_map(myCorpus, stripWhitespace)
+myCorpus <- tm_map(myCorpus, removePunctuation, ucp = TRUE)
+myCorpus <- tm_map(myCorpus, removeNumbers)
+#myCorpus <- tm_map(myCorpus, removeWords, stopwords('en'))
+#myCorpus[25:35]$content
+
+for (i in 1:5) {
+  cat(paste("[[", i, "]] ", sep=""))
+  writeLines(strwrap(myCorpus[[i]], width=73))
+}  
+```
+
+```{r warning=FALSE, message=FALSE}
+#Stopwords
+
+myStopwords <- c(stopwords("en"))
+stopwords("en")
+myStopwords <- setdiff(myStopwords, c("2"))
+myCorpus <- tm_map(myCorpus, removeWords, myStopwords)
+
+for (i in 1:5) {
+  cat(paste("[[", i, "]] ", sep=""))
+  writeLines(strwrap(myCorpus[[i]], width=73))
+}  
+#inspect(myCorpus[25:35])
+
+
+myCorpus <- tm_map(myCorpus, stripWhitespace)
+#myCorpus[11:15]$content
+```
+
+
+```{r warning=FALSE, message=FALSE}
+#Stemming
+
+myCorpusCopy <- myCorpus
+myCorpus2<-tm_map(myCorpus, stemDocument)
+
+for (i in 1:5) {
+  cat(paste("[[", i, "]] ", sep=""))
+  writeLines(strwrap(myCorpus2[[i]], width=73))
+}
+
+for (i in 1:5) {
+  cat(paste0("[", i, "] "))
+  writeLines(strwrap(as.character(myCorpus2[[i]]), 73))
+}
+
+stemCompletion2 <- function(x, dictionary) {
+  x <- unlist(strsplit(as.character(x), " "))
+  # Unexpectedly, stemCompletion completes an empty string to
+  # a word in dictionary. Remove empty string to avoid above issue.
+  x <- x[x != ""]
+  x <- stemCompletion(x, dictionary=dictionary)
+  x <- paste(x, sep="", collapse=" ")
+  PlainTextDocument(stripWhitespace(x))
+}
+myCorpus3 <- lapply(myCorpus, stemCompletion2, dictionary=myCorpusCopy)
+
+myCorpus4<-myCorpus
+
+for (i in 1:length(myCorpus)) {
+  myCorpus4[[i]] <-(myCorpus3[[i]]$content)
+}
+
+for (i in 1:5) {
+  cat(paste("[[", i, "]] ", sep=""))
+  writeLines(strwrap(myCorpus4[[i]], width=73))
+}
+```
+
+```{r warning=FALSE, message=FALSE}
+#Replace word
+
+wordFreq <- function(corpus, word) {
+  results <- lapply(corpus,
+                    function(x) { grep(as.character(x),
+                                       pattern=paste0("\\<",word)) }
+  )
+  sum(unlist(results))
+}
+
+# Building a Term-Document Matrix  (TDM) 
+
+tdm <- TermDocumentMatrix(myCorpus4, control=list(wordLengths=c(1,Inf)))
+tdm
+```
+
+```{r warning=FALSE, message=FALSE}
+#  Frequent Terms and Associations 
+
+findFreqTerms(tdm, lowfreq=5)
+
+termFrequency <- rowSums(as.matrix(tdm))
+termFrequency <- subset(termFrequency, termFrequency>=5)
+
+library(ggplot2)
+df <- data.frame(term=names(termFrequency), freq=termFrequency)
+ggplot(df, aes(x=term, y=freq)) + geom_bar(stat="identity") +
+  xlab("Terms") + ylab("Count") + coord_flip()
+
+#barplot(termFrequency, las=2)
+```
+
+```{r warning=FALSE, message=FALSE}
+#Wordcloud
+
+m <- as.matrix(tdm)
+# calculate the frequency of words and sort it descendingly by frequency
+wordFreq <- sort(rowSums(m), decreasing=TRUE)
+# colors
+pal <- brewer.pal(9, "PuBuGn")
+pal <- pal[-(1:3)]
+# word cloud
+set.seed(66) # to make it reproducible
+grayLevels <- gray( (wordFreq+10) / (max(wordFreq)+10) )
+wordcloud(words=names(wordFreq), freq=wordFreq, min.freq=5, 
+          random.order=F, colors = pal, max.words = 80, scale=c(3,0.8))
+```
+
+```{r warning=FALSE, message=FALSE}
+#Clustering
+
+tdm2 <- removeSparseTerms(tdm, sparse=0.95)
+m2 <- as.matrix(tdm2)
+# cluster terms
+distMatrix <- dist(scale(m2))
+fit <- hclust(distMatrix, method="ward.D")
+plot(fit)
+# cut tree into 10 clusters
+rect.hclust(fit, k=4)
+(groups <- cutree(fit, k=4))
+```
+

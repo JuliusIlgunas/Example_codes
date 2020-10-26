@@ -1,0 +1,169 @@
+---
+title: "II Dalis"
+author: "Julius Ilgūnas"
+date: "12/02/2019"
+output: html_document
+---
+```{r, results=F, warning=FALSE}
+if (!"pacman" %in% rownames(installed.packages())) install.packages("pacman")
+require(pacman)
+pacman::p_load(DRR, doParallel, tibble, caret, e1071, randomForest, mlr, tuneRanger, glmnetUtils, MASS, FNN, RSNNS, tidyr, precrec, PresenceAbsence, OptimalCutpoints)
+#pacman::p_load(neuralnet, nnet)
+no_cores <- max(1,detectCores()-1)
+cl <- makeCluster(no_cores)
+registerDoParallel(cl)
+if (!"ROC" %in% rownames(installed.packages())) {
+  pacman::p_load(githubinstall)
+  githubinstall("ROC",ask=F)
+  #pacman::p_load(devtools)
+  #install_github("davidavdav/ROC")
+}
+pacman::p_load(ROC)
+```
+
+```{r, results=FALSE}
+factorsNumeric <- function(d) modifyList(d, lapply(d[, sapply(d, is.factor)], as.numeric))
+
+D <- read.csv('C:/Users/juliu/OneDrive/Desktop/Magistro 2 kursas/Projektas/DVDA_vidiniu_duomenu_2_dalis_IND/Greene_cardholder.csv',header=T)
+
+```
+
+![Koreliacijų matrica, iš čia pasirinkta pašalinti kintamuosius "anydrg" ir "exp_inc"](C:/Users/juliu/OneDrive/Desktop/Magistro 2 kursas/Projektas/Capture.PNG)
+
+```{r}
+myData <- D[,-which(colnames(D) %in% c("exp_inc"))]
+rm(D)
+colY <- "cardhldr"
+idxY <- which(colnames(myData) %in% colY)
+myData[,idxY] <- factor(myData[,idxY],labels=c("False","True"))
+```
+
+
+```{r, warning=F, message=FALSE}
+as.data.frame(table(myData$cardhldr))
+library(skimr)
+skim(myData)
+```
+
+```{r, warning=F, message=FALSE}
+library(DMwR)
+# table(myData$car)
+balanced_data <- SMOTE(cardhldr ~ ., myData, perc.over = 100)
+as.data.frame(table(balanced_data$cardhldr))
+myData <- balanced_data
+```
+
+```{r, warning=F, message=FALSE}
+nmd <- names(myData)
+formulaLong <- as.formula(paste(paste(colY," ~",sep=""), paste(nmd[!nmd %in% colY], collapse = " + ")))
+formulaShort <- as.formula(paste(paste(colY,".",sep="~")))  
+
+# prepare normalization routine for a data set
+procValues <- preProcess(factorsNumeric(myData[,-idxY]), method = c("center", "scale"))
+
+# k-NN and neural settings
+knn_n <- tune.knn(x = myData[,-which(colnames(myData) %in% colY)],
+                  y = myData[,which(colnames(myData) %in% colY)],
+                  k = 1:100,tunecontrol=tune.control(sampling = "cross"), cross=3 )
+summary(knn_n)
+knn_neighs <- 3 # mažiausias error gaunasi su k=1, o toliau dideja. Kad išvengt persimokymo                      pasirinksime skaičių 3
+hiddenSize <- 10
+
+
+k <- 3 # number of CV folds
+myFolds <- createFolds(myData[,colY],k)
+```
+
+```{r, warning=FALSE, message=FALSE}
+myResults <- NULL
+
+for (i in 1:k) {
+  
+  tstInd <- myFolds[[i]] 
+  trnIdx <- as.logical(rep(1,1,nrow(myData)))
+  trnIdx[tstInd] <- FALSE 
+  trnInd <- which(trnIdx) 
+  target <- as.logical(myData[tstInd,idxY]) 
+  
+  trnDataProc <- predict(procValues, factorsNumeric(myData[trnInd,-idxY]))
+  tstDataProc <- predict(procValues, factorsNumeric(myData[tstInd,-idxY]))
+  
+
+  cat(sprintf("\nCV fold %d out of %d / k-Nearest Neighbors\n", i, k))
+  knn_model <- knn(trnDataProc, tstDataProc, myData[trnInd,idxY], k = knn_neighs, prob = TRUE, algorithm = "kd_tree")
+  model <- rep("kNN",length(target))
+  score <- 1-abs(as.numeric(knn_model)-1-attr(knn_model,"prob"))
+  myResults <- rbind(myResults,data.frame(tstInd,model,score,target))
+  rm(knn_model)
+  
+  cat(sprintf("\nCV fold %d out of %d / Neural Network (RSNNS package)\n", i, k))
+  SNNS_model <- mlp(trnDataProc, as.numeric(myData[trnInd,idxY])-1, size = hiddenSize, linOut = FALSE, maxit = 1000, shufflePatterns = FALSE,  learnFunc = "Rprop")
+  model <- rep("SNNS",length(target))
+  score <- predict(SNNS_model,tstDataProc)
+  myResults <- rbind(myResults,data.frame(tstInd, model,score,target))
+  
+}
+
+myModels <- levels(myResults[,"model"])
+myScores <- spread(myResults, model, score)
+```
+
+```{r}
+myF <- NULL
+for (i in 1:length(myModels)) {
+  opt.cut.result <- optimal.cutpoints(X = myModels[i], status = "target", tag.healthy = 0, methods = "SpEqualSe", data = myScores, trace = F)
+  threshold <- opt.cut.result$SpEqualSe$Global$optimal.cutoff$cutoff
+  print(threshold)
+  confusionMatrix <- caret::confusionMatrix(as.factor(myScores[,myModels[i]]>=threshold),as.factor(myScores$target),positive="TRUE",mode="everything")
+  cat(paste0(myModels[i],'\n'))
+  print(confusionMatrix)
+  myF <- c(myF,as.numeric(confusionMatrix$byClass['F1']))
+}
+```
+
+
+
+```{r, warning=FALSE, message=FALSE}
+# ROC curves
+library(ROCR)
+plot(1, type="n", xlab="False Positive Rate", ylab="True Positive Rate",
+     xlim=c(0, 1), ylim=c(0, 1), main="ROC")
+au <- NULL
+mod_cols <- c("red", "blue")
+for (i in 1:length(myModels)) {
+  
+  mod <- filter(myResults, model == myModels[i])
+  pred <- prediction(mod$score, mod$target)
+  roc <- performance(pred, "tpr", "fpr")
+  plot(roc, add=T, col=mod_cols[i])
+  
+  auc <- performance(pred, "auc")
+  auc <- unlist(slot(auc, "y.values"))
+  auc <- round(auc, 4)
+  aucc <- c(au, auc)
+  au <- auc
+  }
+ auccc <- paste(myModels, aucc, sep=" ")
+ legend(.7, .3, legend = auccc, title = "AUC", col=c("red", "blue"), lty=1, cex=0.8)
+ abline(a=0, b=1)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# DET curves
+myModelNames <- NULL
+det.plot(NULL,1,xmax=60,ymax=60)
+for (i in 1:length(myModels)) {
+  performance <- det.plot(myResults[myResults[,"model"]==myModels[i],],nr=i+1)
+  myModelNames[i] <- sprintf('%s EER=%5.2f%%',myModels[i],performance['eer'])
+}
+legend(log(0.042),log(0.28),myModelNames,lty=rep(1,1,length(myModels)),col=2:(length(myModels)+1),cex=0.8)
+
+```
+```{r, warning=FALSE, message=FALSE}
+# Precision-Recall curves
+myScores <- spread(myResults, model, score)
+myLegend <- paste0(myModels, " F1=", format(myF,digits=3))
+msmdat <- mmdata(myScores[,-c(1,2)], myScores[,2], posclass = T, modnames = myLegend)
+plot(autoplot(evalmod(msmdat), "PRC", type="b"))
+```
+
